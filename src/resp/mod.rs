@@ -7,6 +7,7 @@ use enum_dispatch::enum_dispatch;
 use std::{
     collections::BTreeMap,
     ops::{Deref, DerefMut},
+    string::FromUtf8Error,
 };
 use thiserror::Error;
 
@@ -23,7 +24,7 @@ pub enum RespError {
     #[error("Parse int error: {0}")]
     ParseIntError(#[from] std::num::ParseIntError),
     #[error("Utf8 error: {0}")]
-    Utf8Error(#[from] std::str::Utf8Error),
+    Utf8Error(#[from] FromUtf8Error),
     #[error("Parse float error: {0}")]
     ParseFloatError(#[from] std::num::ParseFloatError),
 }
@@ -38,7 +39,7 @@ pub trait RespDecode: Sized {
 }
 
 #[enum_dispatch(RespEncode)]
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum RespFrame {
     SimpleString(SimpleString),
     Error(SimpleError),
@@ -54,31 +55,31 @@ pub enum RespFrame {
     Set(RespSet),
 }
 
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct SimpleString(String);
 
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct SimpleError(String);
 
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct BulkString(Vec<u8>);
 
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct RespNull;
 
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct RespArray(Vec<RespFrame>);
 
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct RespNullArray;
 
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct RespNullBulkString;
 
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct RespMap(BTreeMap<String, RespFrame>);
 
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct RespSet(Vec<RespFrame>);
 
 impl Deref for SimpleString {
@@ -105,11 +106,26 @@ impl Deref for BulkString {
     }
 }
 
+impl AsRef<[u8]> for BulkString {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 impl Deref for RespArray {
     type Target = Vec<RespFrame>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl IntoIterator for RespArray {
+    type Item = RespFrame;
+    type IntoIter = std::vec::IntoIter<RespFrame>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
     }
 }
 
