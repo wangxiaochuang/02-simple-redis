@@ -1,4 +1,4 @@
-use crate::{RespArray, RespFrame, RespMap, RespNull};
+use crate::{BulkString, RespArray, RespFrame, RespNull};
 
 use super::{
     extract_args, validate_command, CommandError, CommandExecutor, HGet, HGetAll, HSet, RESP_OK,
@@ -24,11 +24,18 @@ impl CommandExecutor for HGetAll {
     fn execute(self, backend: &crate::backend::Backend) -> RespFrame {
         match backend.hgetall(&self.key) {
             Some(hmap) => {
-                let mut map = RespMap::new();
-                hmap.iter().for_each(|v| {
-                    map.insert(v.key().into(), v.value().clone());
-                });
-                map.into()
+                let mut data: Vec<_> = hmap
+                    .iter()
+                    .map(|v| (v.key().to_owned(), v.value().clone()))
+                    .collect();
+                if self.sort {
+                    data.sort_by(|a, b| a.0.cmp(&b.0))
+                }
+                let ret = data
+                    .into_iter()
+                    .flat_map(|(k, v)| vec![BulkString::from(k.as_ref()).into(), v])
+                    .collect::<Vec<RespFrame>>();
+                RespArray::new(ret).into()
             }
             None => RespArray::new([]).into(),
         }
@@ -81,6 +88,7 @@ impl TryFrom<RespArray> for HGetAll {
         match args.next() {
             Some(RespFrame::BulkString(key)) => Ok(HGetAll {
                 key: String::from_utf8(key.to_vec())?,
+                sort: false,
             }),
             _ => Err(CommandError::InvalidArgument("invalid key".into())),
         }
@@ -153,11 +161,15 @@ mod tests {
 
         let cmd = HGetAll {
             key: "hello".into(),
+            sort: true,
         };
 
-        let mut expected = RespMap::new();
-        expected.insert("myfield".into(), BulkString::new("world").into());
-        expected.insert("myfield1".into(), BulkString::new("world1").into());
+        let expected = RespArray::new([
+            BulkString::from("myfield").into(),
+            BulkString::from("world").into(),
+            BulkString::from("myfield1").into(),
+            BulkString::from("world1").into(),
+        ]);
         let result = cmd.execute(&backend);
         assert_eq!(result, expected.into());
         Ok(())

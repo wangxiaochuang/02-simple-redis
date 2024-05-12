@@ -74,6 +74,12 @@ impl AsRef<[u8]> for BulkString {
     }
 }
 
+impl From<&str> for BulkString {
+    fn from(s: &str) -> Self {
+        BulkString::new(s.as_bytes().to_vec())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::RespFrame;
