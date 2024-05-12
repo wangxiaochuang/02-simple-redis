@@ -1,15 +1,36 @@
-mod decode;
-mod encode;
+mod array;
+mod bool;
+mod bulk_string;
+mod double;
+mod frame;
+mod integer;
+mod map;
+mod null;
+mod set;
+mod simple_error;
+mod simple_string;
+
 use anyhow::Result;
 
 use bytes::{Buf, BytesMut};
 use enum_dispatch::enum_dispatch;
-use std::{
-    collections::BTreeMap,
-    ops::{Deref, DerefMut},
-    string::FromUtf8Error,
-};
+use std::string::FromUtf8Error;
 use thiserror::Error;
+
+pub use self::{
+    array::{RespArray, RespNullArray},
+    bulk_string::BulkString,
+    bulk_string::RespNullBulkString,
+    frame::RespFrame,
+    map::RespMap,
+    null::RespNull,
+    set::RespSet,
+    simple_error::SimpleError,
+    simple_string::SimpleString,
+};
+
+const BUF_CAP: usize = 4096;
+const CRLF_LEN: usize = 2;
 
 #[derive(Error, Debug, PartialEq)]
 pub enum RespError {
@@ -38,158 +59,20 @@ pub trait RespDecode: Sized {
     fn decode(buf: &mut BytesMut) -> Result<Self, RespError>;
 }
 
-#[enum_dispatch(RespEncode)]
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub enum RespFrame {
-    SimpleString(SimpleString),
-    Error(SimpleError),
-    Integer(i64),
-    BulkString(BulkString),
-    NullBulkString(RespNullBulkString),
-    Array(RespArray),
-    NullArray(RespNullArray),
-    Null(RespNull),
-    Boolean(bool),
-    Double(f64),
-    Map(RespMap),
-    Set(RespSet),
-}
-
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct SimpleString(String);
-
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct SimpleError(String);
-
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct BulkString(Vec<u8>);
-
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct RespNull;
-
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct RespArray(Vec<RespFrame>);
-
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct RespNullArray;
-
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct RespNullBulkString;
-
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct RespMap(BTreeMap<String, RespFrame>);
-
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct RespSet(Vec<RespFrame>);
-
-impl Deref for SimpleString {
-    type Target = String;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+fn extract_simpe_frame_data(buf: &mut BytesMut, prefix: &str) -> Result<usize, RespError> {
+    if buf.len() < 3 {
+        return Err(RespError::NotComplete);
     }
-}
-
-impl Deref for SimpleError {
-    type Target = String;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+    if !buf.starts_with(prefix.as_bytes()) {
+        return Err(RespError::InvalidFrameType(format!(
+            "expect: SimpleString({}), got: {:?}",
+            prefix, buf
+        )));
     }
-}
 
-impl Deref for BulkString {
-    type Target = Vec<u8>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl AsRef<[u8]> for BulkString {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl Deref for RespArray {
-    type Target = Vec<RespFrame>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl IntoIterator for RespArray {
-    type Item = RespFrame;
-    type IntoIter = std::vec::IntoIter<RespFrame>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
-    }
-}
-
-impl Deref for RespMap {
-    type Target = BTreeMap<String, RespFrame>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for RespMap {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl Deref for RespSet {
-    type Target = Vec<RespFrame>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl SimpleString {
-    pub fn new(s: impl Into<String>) -> Self {
-        SimpleString(s.into())
-    }
-}
-
-impl SimpleError {
-    pub fn new(s: impl Into<String>) -> Self {
-        SimpleError(s.into())
-    }
-}
-
-impl BulkString {
-    pub fn new(s: impl Into<Vec<u8>>) -> Self {
-        BulkString(s.into())
-    }
-}
-
-impl RespArray {
-    pub fn new(v: impl Into<Vec<RespFrame>>) -> Self {
-        RespArray(v.into())
-    }
-}
-
-impl RespMap {
-    pub fn new() -> Self {
-        RespMap(BTreeMap::new())
-    }
-}
-impl Default for RespMap {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl RespSet {
-    pub fn new(v: impl Into<Vec<RespFrame>>) -> Self {
-        RespSet(v.into())
-    }
+    buf.windows(2)
+        .position(|pair| pair == [b'\r', b'\n'])
+        .ok_or(RespError::NotComplete)
 }
 
 fn extract_fixed_data(
@@ -217,113 +100,13 @@ fn extract_fixed_data(
     Ok(())
 }
 
+fn parse_length(buf: &mut BytesMut, prefix: &str) -> Result<(usize, usize), RespError> {
+    let end = extract_simpe_frame_data(buf, prefix)?;
+    let s = String::from_utf8_lossy(&buf[prefix.len()..end]);
+    Ok((end, s.parse()?))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn test_simple_string_encode() {
-        let frame: RespFrame = SimpleString::new("OK".to_string()).into();
-        assert_eq!(frame.encode(), b"+OK\r\n");
-    }
-
-    #[test]
-    fn test_error_encode() {
-        let frame: RespFrame = SimpleError::new("Error message".to_string()).into();
-        assert_eq!(frame.encode(), b"-Error message\r\n");
-    }
-
-    #[test]
-    fn test_integer_encode() {
-        let frame: RespFrame = 42.into();
-        assert_eq!(frame.encode(), b":+42\r\n");
-        let frame: RespFrame = (-42).into();
-        assert_eq!(frame.encode(), b":-42\r\n");
-    }
-
-    #[test]
-    fn test_bulk_string_encode() {
-        let frame: RespFrame = BulkString::new("Hello").into();
-        assert_eq!(frame.encode(), b"$5\r\nHello\r\n");
-    }
-
-    #[test]
-    fn test_null_bulk_string_encode() {
-        let frame: RespFrame = RespNullBulkString.into();
-        assert_eq!(frame.encode(), b"$-1\r\n");
-    }
-
-    #[test]
-    fn test_array_encode() {
-        let frame: RespFrame = RespArray::new(vec![
-            BulkString::new("set").into(),
-            BulkString::new("hello").into(),
-            BulkString::new("world").into(),
-        ])
-        .into();
-        assert_eq!(
-            frame.encode(),
-            b"*3\r\n$3\r\nset\r\n$5\r\nhello\r\n$5\r\nworld\r\n"
-        )
-    }
-
-    #[test]
-    fn test_null_array_encode() {
-        let frame: RespFrame = RespNullArray.into();
-        assert_eq!(frame.encode(), b"*-1\r\n");
-    }
-
-    #[test]
-    fn test_null_encode() {
-        let frame: RespFrame = RespNull.into();
-        assert_eq!(frame.encode(), b"_\r\n");
-    }
-
-    #[test]
-    fn test_boolean_encode() {
-        let frame: RespFrame = true.into();
-        assert_eq!(frame.encode(), b"#t\r\n");
-        let frame: RespFrame = false.into();
-        assert_eq!(frame.encode(), b"#f\r\n");
-    }
-
-    #[test]
-    fn test_double_encode() {
-        let frame: RespFrame = 123.456.into();
-        assert_eq!(frame.encode(), b",+123.456\r\n");
-        let frame: RespFrame = (-123.456).into();
-        assert_eq!(frame.encode(), b",-123.456\r\n");
-        let frame: RespFrame = 1.23456e+8.into();
-        assert_eq!(frame.encode(), b",+1.23456e8\r\n");
-        let frame: RespFrame = (-1.23456e-9).into();
-        assert_eq!(frame.encode(), b",-1.23456e-9\r\n");
-    }
-
-    #[test]
-    fn test_map_encode() {
-        let mut map = RespMap::new();
-        map.insert(
-            "hello".to_string(),
-            BulkString::new("world".to_string()).into(),
-        );
-        map.insert("foo".to_string(), (-123456.789).into());
-        let frame: RespFrame = map.into();
-        assert_eq!(
-            frame.encode(),
-            b"%2\r\n+foo\r\n,-123456.789\r\n+hello\r\n$5\r\nworld\r\n"
-        )
-    }
-
-    #[test]
-    fn test_set_encode() {
-        let set = RespSet::new([
-            RespArray::new([1234.into(), true.into()]).into(),
-            BulkString::new("world").into(),
-        ]);
-        let frame: RespFrame = set.into();
-        assert_eq!(
-            frame.encode(),
-            b"~2\r\n*2\r\n:+1234\r\n#t\r\n$5\r\nworld\r\n"
-        )
-    }
+    // TODO: Add tests
 }

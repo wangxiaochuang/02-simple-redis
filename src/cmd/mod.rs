@@ -62,11 +62,11 @@ impl TryFrom<RespArray> for Command {
     fn try_from(value: RespArray) -> Result<Self, Self::Error> {
         match value.first() {
             Some(RespFrame::BulkString(ref cmd)) => match cmd.as_ref() {
-                b"get" => Ok(Get::try_from(value)?.into()),
-                b"set" => Ok(Set::try_from(value)?.into()),
-                b"hget" => Ok(HGet::try_from(value)?.into()),
-                b"hset" => Ok(HSet::try_from(value)?.into()),
-                b"hgetall" => Ok(HGetAll::try_from(value)?.into()),
+                b"get" => Get::try_from(value).map(|x| x.into()),
+                b"set" => Set::try_from(value).map(|x| x.into()),
+                b"hget" => HGet::try_from(value).map(|x| x.into()),
+                b"hset" => HSet::try_from(value).map(|x| x.into()),
+                b"hgetall" => HGetAll::try_from(value).map(|x| x.into()),
                 _ => Ok(Unrecognized.into()),
             },
             _ => Err(CommandError::InvalidCommand(
